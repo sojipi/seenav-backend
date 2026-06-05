@@ -52,6 +52,7 @@ ANTHROPIC_BASE_URL=https://newapi.zenmb.com
 ANTHROPIC_API_KEY=replace-me
 ANTHROPIC_MODEL=claude-sonnet-4-5-20250929-thinking
 ANTHROPIC_AUTH_HEADER=both
+ANTHROPIC_TRUST_ENV_PROXY=false
 ```
 
 After deploy, you'll get a public URL like `https://seenav-backend.up.railway.app`
@@ -152,10 +153,11 @@ $env:ANTHROPIC_BASE_URL="https://newapi.zenmb.com"
 $env:ANTHROPIC_API_KEY="..."
 $env:ANTHROPIC_MODEL="claude-sonnet-4-5-20250929-thinking"
 $env:ANTHROPIC_AUTH_HEADER="both"
+$env:ANTHROPIC_TRUST_ENV_PROXY="false"
 py .\server.py
 ```
 
-The Anthropic-compatible endpoint is called at `/v1/messages`. The request sends both the parking map and the current glasses frame as base64 image blocks. `ANTHROPIC_AUTH_HEADER=both` sends both `x-api-key` and `Authorization: Bearer ...`, which is useful for proxy services; use `x-api-key` or `authorization` if your provider requires one specific header.
+The Anthropic-compatible endpoint is called at `/v1/messages`. The request sends both the parking map and the current glasses frame as base64 image blocks. `ANTHROPIC_AUTH_HEADER=both` sends both `x-api-key` and `Authorization: Bearer ...`, which is useful for proxy services; use `x-api-key` or `authorization` if your provider requires one specific header. `ANTHROPIC_TRUST_ENV_PROXY=false` ignores local `HTTP_PROXY` / `HTTPS_PROXY` variables, which is useful when a local proxy breaks Python TLS requests.
 
 ## Design
 

@@ -46,6 +46,11 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", MODEL_API_KEY)
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", MODEL_NAME)
 ANTHROPIC_VERSION = os.environ.get("ANTHROPIC_VERSION", "2023-06-01")
 ANTHROPIC_AUTH_HEADER = os.environ.get("ANTHROPIC_AUTH_HEADER", "both").strip().lower()
+ANTHROPIC_TRUST_ENV_PROXY = os.environ.get("ANTHROPIC_TRUST_ENV_PROXY", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 SESSIONS: dict[str, dict[str, Any]] = {}
 
@@ -328,12 +333,20 @@ def anthropic_headers() -> dict[str, str]:
     headers = {
         "Content-Type": "application/json",
         "anthropic-version": ANTHROPIC_VERSION,
+        "User-Agent": "SeeNavBackend/1.0",
     }
     if ANTHROPIC_AUTH_HEADER in ("authorization", "bearer", "both"):
         headers["Authorization"] = f"Bearer {ANTHROPIC_API_KEY}"
     if ANTHROPIC_AUTH_HEADER in ("x-api-key", "api-key", "both"):
         headers["x-api-key"] = ANTHROPIC_API_KEY
     return headers
+
+
+def open_anthropic_request(request: urllib.request.Request, timeout: int = 30) -> Any:
+    if ANTHROPIC_TRUST_ENV_PROXY:
+        return urllib.request.urlopen(request, timeout=timeout)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(request, timeout=timeout)
 
 
 def call_anthropic_compatible_model(payload: dict[str, Any], session: dict[str, Any]) -> dict[str, Any] | None:
@@ -388,7 +401,7 @@ def call_anthropic_compatible_model(payload: dict[str, Any], session: dict[str, 
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with open_anthropic_request(request, timeout=30) as response:
             response_json = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
         return None

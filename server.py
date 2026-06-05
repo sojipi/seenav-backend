@@ -21,6 +21,11 @@ PROVIDER = os.environ.get("SEENAV_PROVIDER", "mock").strip().lower()
 MODEL_BASE_URL = os.environ.get("VISION_MODEL_BASE_URL", "").rstrip("/")
 MODEL_API_KEY = os.environ.get("VISION_MODEL_API_KEY", "")
 MODEL_NAME = os.environ.get("VISION_MODEL_NAME", "")
+ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", MODEL_BASE_URL).rstrip("/")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", MODEL_API_KEY)
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", MODEL_NAME)
+ANTHROPIC_VERSION = os.environ.get("ANTHROPIC_VERSION", "2023-06-01")
+ANTHROPIC_AUTH_HEADER = os.environ.get("ANTHROPIC_AUTH_HEADER", "both").strip().lower()
 
 SESSIONS: dict[str, dict[str, Any]] = {}
 
@@ -173,19 +178,9 @@ def infer_demo_frame(session: dict[str, Any], payload: dict[str, Any]) -> dict[s
     return dict(DEMO_FRAMES[index])
 
 
-def call_vision_model(payload: dict[str, Any], session: dict[str, Any]) -> dict[str, Any] | None:
-    if PROVIDER != "openai_compatible":
-        return None
-    if not MODEL_BASE_URL or not MODEL_API_KEY or not MODEL_NAME:
-        return None
-
-    image_base64 = payload.get("imageBase64") or ""
-    mime_type = payload.get("mimeType") or "image/jpeg"
-    if not image_base64:
-        return None
+def build_navigation_prompt(payload: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
     parking_map = session.get("parkingMap") or {}
-
-    prompt = {
+    return {
         "task": "Analyze smart-glasses parking navigation using a supplied parking map and the current camera frame.",
         "destination": payload.get("destination", "B1 C区 C18"),
         "scenario": payload.get("scenario", "parking"),
@@ -218,6 +213,33 @@ def call_vision_model(payload: dict[str, Any], session: dict[str, Any]) -> dict[
             "scanButtonText": "short Chinese label",
         },
     }
+
+
+def get_frame_image(payload: dict[str, Any]) -> tuple[str, str] | None:
+    image_base64 = payload.get("imageBase64") or ""
+    mime_type = payload.get("mimeType") or "image/jpeg"
+    if not image_base64:
+        return None
+    return str(image_base64), str(mime_type)
+
+
+def call_vision_model(payload: dict[str, Any], session: dict[str, Any]) -> dict[str, Any] | None:
+    if PROVIDER == "openai_compatible":
+        return call_openai_compatible_model(payload, session)
+    if PROVIDER == "anthropic_compatible":
+        return call_anthropic_compatible_model(payload, session)
+    return None
+
+
+def call_openai_compatible_model(payload: dict[str, Any], session: dict[str, Any]) -> dict[str, Any] | None:
+    if not MODEL_BASE_URL or not MODEL_API_KEY or not MODEL_NAME:
+        return None
+    frame_image = get_frame_image(payload)
+    if not frame_image:
+        return None
+    image_base64, mime_type = frame_image
+    parking_map = session.get("parkingMap") or {}
+    prompt = build_navigation_prompt(payload, session)
     user_content: list[dict[str, Any]] = [
         {"type": "text", "text": json.dumps(prompt, ensure_ascii=False)}
     ]
@@ -276,6 +298,101 @@ def call_vision_model(payload: dict[str, Any], session: dict[str, Any]) -> dict[
     return parse_model_json(content)
 
 
+def anthropic_messages_url() -> str:
+    if ANTHROPIC_BASE_URL.endswith("/v1"):
+        return f"{ANTHROPIC_BASE_URL}/messages"
+    return f"{ANTHROPIC_BASE_URL}/v1/messages"
+
+
+def anthropic_headers() -> dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+        "anthropic-version": ANTHROPIC_VERSION,
+    }
+    if ANTHROPIC_AUTH_HEADER in ("authorization", "bearer", "both"):
+        headers["Authorization"] = f"Bearer {ANTHROPIC_API_KEY}"
+    if ANTHROPIC_AUTH_HEADER in ("x-api-key", "api-key", "both"):
+        headers["x-api-key"] = ANTHROPIC_API_KEY
+    return headers
+
+
+def call_anthropic_compatible_model(payload: dict[str, Any], session: dict[str, Any]) -> dict[str, Any] | None:
+    if not ANTHROPIC_BASE_URL or not ANTHROPIC_API_KEY or not ANTHROPIC_MODEL:
+        return None
+    frame_image = get_frame_image(payload)
+    if not frame_image:
+        return None
+    image_base64, mime_type = frame_image
+    parking_map = session.get("parkingMap") or {}
+    prompt = build_navigation_prompt(payload, session)
+    user_content: list[dict[str, Any]] = [
+        {"type": "text", "text": json.dumps(prompt, ensure_ascii=False)}
+    ]
+    if parking_map.get("imageBase64"):
+        user_content.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": parking_map.get("mimeType", "image/jpeg"),
+                    "data": parking_map["imageBase64"],
+                },
+            }
+        )
+    user_content.append(
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mime_type,
+                "data": image_base64,
+            },
+        }
+    )
+    request_body: dict[str, Any] = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 1200,
+        "system": "You return only strict JSON for a landmark-based smart-glasses parking navigation UI.",
+        "messages": [
+            {
+                "role": "user",
+                "content": user_content,
+            }
+        ],
+    }
+    data = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        anthropic_messages_url(),
+        data=data,
+        headers=anthropic_headers(),
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response_json = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return None
+    return parse_anthropic_json(response_json)
+
+
+def parse_anthropic_json(response_json: dict[str, Any]) -> dict[str, Any] | None:
+    content = response_json.get("content")
+    if isinstance(content, str):
+        return parse_model_json(content)
+    if not isinstance(content, list):
+        return None
+
+    texts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text" and isinstance(part.get("text"), str):
+            texts.append(part["text"])
+    if not texts:
+        return None
+    return parse_model_json("\n".join(texts))
+
+
 def parse_model_json(content: str) -> dict[str, Any] | None:
     if not content:
         return None
@@ -295,6 +412,14 @@ def parse_model_json(content: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             return None
     return value if isinstance(value, dict) else None
+
+
+def model_configured() -> bool:
+    if PROVIDER == "openai_compatible":
+        return bool(MODEL_BASE_URL and MODEL_API_KEY and MODEL_NAME)
+    if PROVIDER == "anthropic_compatible":
+        return bool(ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY and ANTHROPIC_MODEL)
+    return False
 
 
 def locate(payload: dict[str, Any]) -> dict[str, Any]:
@@ -340,7 +465,7 @@ class SeeNavHandler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "provider": PROVIDER,
-                    "modelConfigured": bool(MODEL_BASE_URL and MODEL_API_KEY and MODEL_NAME),
+                    "modelConfigured": model_configured(),
                     "sessions": len(SESSIONS),
                 }
             )

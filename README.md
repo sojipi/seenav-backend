@@ -48,6 +48,10 @@ SEENAV_PROVIDER=mock
 VISION_MODEL_BASE_URL=https://api.example.com/v1
 VISION_MODEL_API_KEY=replace-me
 VISION_MODEL_NAME=vision-model-name
+ANTHROPIC_BASE_URL=https://newapi.zenmb.com
+ANTHROPIC_API_KEY=replace-me
+ANTHROPIC_MODEL=claude-sonnet-4-5-20250929-thinking
+ANTHROPIC_AUTH_HEADER=both
 ```
 
 After deploy, you'll get a public URL like `https://seenav-backend.up.railway.app`
@@ -128,7 +132,7 @@ Request:
 
 By default, the backend runs in deterministic `mock` mode, which is safest for competition demos.
 
-To call a vision model endpoint, set:
+To call an OpenAI-compatible vision model endpoint, set:
 
 ```powershell
 $env:SEENAV_PROVIDER="openai_compatible"
@@ -139,6 +143,19 @@ py .\server.py
 ```
 
 The endpoint must accept `/chat/completions` style requests with image content.
+
+To call an Anthropic-compatible vision model endpoint, set:
+
+```powershell
+$env:SEENAV_PROVIDER="anthropic_compatible"
+$env:ANTHROPIC_BASE_URL="https://newapi.zenmb.com"
+$env:ANTHROPIC_API_KEY="..."
+$env:ANTHROPIC_MODEL="claude-sonnet-4-5-20250929-thinking"
+$env:ANTHROPIC_AUTH_HEADER="both"
+py .\server.py
+```
+
+The Anthropic-compatible endpoint is called at `/v1/messages`. The request sends both the parking map and the current glasses frame as base64 image blocks. `ANTHROPIC_AUTH_HEADER=both` sends both `x-api-key` and `Authorization: Bearer ...`, which is useful for proxy services; use `x-api-key` or `authorization` if your provider requires one specific header.
 
 ## Design
 

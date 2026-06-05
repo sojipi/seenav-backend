@@ -1,0 +1,38 @@
+{
+  "scenario": "parking",
+  "siteName": "Demo Parking B1",
+  "goalExamples": ["B1 C区 C18", "C18", "C区 C18"],
+  "nodes": [
+    {
+      "id": "c_elevator",
+      "label": "B1 C区电梯口外侧",
+      "landmarks": ["C区标牌", "电梯厅", "柱号 C12", "出口箭头"],
+      "neighbors": ["c16_main"]
+    },
+    {
+      "id": "c16_main",
+      "label": "C16 柱前主通道",
+      "landmarks": ["柱号 C16", "C18箭头", "白色车道线", "限速牌"],
+      "neighbors": ["c18_row", "c_elevator", "d_entry"]
+    },
+    {
+      "id": "c18_row",
+      "label": "C18 车位排前方",
+      "landmarks": ["C18标线", "消防栓", "灰色SUV", "柱号 C18"],
+      "neighbors": ["c16_main", "c18_spot"]
+    },
+    {
+      "id": "c18_spot",
+      "label": "B1 C区 C18",
+      "landmarks": ["车位 C18", "目标车辆", "柱号 C18", "C区标牌"],
+      "neighbors": ["c18_row"]
+    },
+    {
+      "id": "d_entry",
+      "label": "B1 D区通道口",
+      "landmarks": ["D区标牌", "出口箭头", "柱号 D03", "收费处"],
+      "neighbors": ["c16_main"]
+    }
+  ],
+  "route": ["c_elevator", "c16_main", "c18_row", "c18_spot"]
+}

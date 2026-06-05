@@ -2,6 +2,11 @@
   "scenario": "parking",
   "siteName": "Demo Parking B1",
   "goalExamples": ["B1 C区 C18", "C18", "C区 C18"],
+  "areaColors": {
+    "C区": "green",
+    "D区": "blue",
+    "出口": "yellow"
+  },
   "nodes": [
     {
       "id": "c_elevator",

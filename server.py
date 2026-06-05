@@ -39,9 +39,9 @@ DEMO_FRAMES = [
         "routeClass": "route-state route-ok",
         "frameMeta": "实拍帧 01 · B1 停车场",
         "currentPlace": "B1 C区电梯口外侧",
-        "orientation": "面向 C12-C16 柱号方向",
-        "landmarks": ["C区标牌", "电梯厅", "柱号 C12", "出口箭头"],
-        "nextAction": "沿当前方向直行，看到 C16 柱后准备右转。",
+        "orientation": "面向地图中绿色 C区车道方向",
+        "landmarks": ["地图当前位置", "绿色 C区", "柱号 C12", "出口箭头"],
+        "nextAction": "沿绿色 C区车道直行，保持在地图标注的 C区颜色范围内。",
         "confidence": 82,
         "progress": 25,
         "activeStep": 2,
@@ -52,9 +52,9 @@ DEMO_FRAMES = [
         "routeClass": "route-state route-ok",
         "frameMeta": "实拍帧 02 · C16 柱前",
         "currentPlace": "C16 柱前主通道",
-        "orientation": "面对 C18 支路入口",
-        "landmarks": ["柱号 C16", "C18箭头", "白色车道线", "限速牌"],
-        "nextAction": "在 C16 柱后右转，进入右侧车位排。",
+        "orientation": "面对地图中 C18 支路入口",
+        "landmarks": ["绿色 C区", "柱号 C16", "C18箭头", "白色车道线"],
+        "nextAction": "到 C16 后右转，进入地图上通向 C18 的同色车位排。",
         "confidence": 88,
         "progress": 55,
         "activeStep": 3,
@@ -66,8 +66,8 @@ DEMO_FRAMES = [
         "frameMeta": "实拍帧 03 · C18 车位排",
         "currentPlace": "C18 车位排前方",
         "orientation": "目标在右前方第二个车位",
-        "landmarks": ["C18标线", "消防栓", "灰色SUV", "柱号 C18"],
-        "nextAction": "继续前进 8 到 12 米，C18 在右侧第二个车位。",
+        "landmarks": ["绿色 C区", "C18标线", "消防栓", "柱号 C18"],
+        "nextAction": "继续沿当前车位排前进，按地图颜色确认仍在 C区，C18 在右侧第二个车位。",
         "confidence": 91,
         "progress": 82,
         "activeStep": 4,
@@ -116,6 +116,18 @@ def get_session(session_id: str) -> dict[str, Any]:
             "createdAt": now_ms(),
         }
     return SESSIONS[session_id]
+
+
+def remember_parking_map(session: dict[str, Any], payload: dict[str, Any]) -> None:
+    map_base64 = str(payload.get("mapBase64") or "")
+    if not map_base64:
+        return
+    session["parkingMap"] = {
+        "imageBase64": map_base64,
+        "mimeType": payload.get("mapMimeType") or "image/jpeg",
+        "size": safe_int(payload.get("mapSize"), 0),
+        "capturedAt": safe_int(payload.get("mapCapturedAt"), now_ms()),
+    }
 
 
 def normalize_session_id(payload: dict[str, Any]) -> str:
@@ -171,13 +183,27 @@ def call_vision_model(payload: dict[str, Any], session: dict[str, Any]) -> dict[
     mime_type = payload.get("mimeType") or "image/jpeg"
     if not image_base64:
         return None
+    parking_map = session.get("parkingMap") or {}
 
     prompt = {
-        "task": "Analyze a smart-glasses navigation frame for pedestrian landmark navigation.",
+        "task": "Analyze smart-glasses parking navigation using a supplied parking map and the current camera frame.",
         "destination": payload.get("destination", "B1 C区 C18"),
         "scenario": payload.get("scenario", "parking"),
         "semanticMap": PARKING_MAP,
+        "parkingMapContext": {
+            "provided": bool(parking_map.get("imageBase64")),
+            "mapSize": parking_map.get("size", 0),
+            "mapMimeType": parking_map.get("mimeType", ""),
+            "meaning": "The parking map contains the user's current starting position, target parking zones, and area colors.",
+        },
+        "routeContext": payload.get("routeContext") or {},
         "history": session.get("history", [])[-4:],
+        "guidanceRules": [
+            "Use the parking map as the route reference and starting-position source.",
+            "Use visible parking-area colors from the camera frame as the main localization cue.",
+            "Cross-check area color, parking-zone labels, arrows, lane direction, and numbered spaces before saying the user arrived.",
+            "Do not mark arrived unless the target parking space or an immediate target-side landmark is visible.",
+        ],
         "responseContract": {
             "routeState": "已定位 | 方向正确 | 接近目标 | 已到达 | 偏离路线",
             "routeClass": "route-state route-ok | route-state route-warn | route-state route-done | route-state route-off",
@@ -192,6 +218,24 @@ def call_vision_model(payload: dict[str, Any], session: dict[str, Any]) -> dict[
             "scanButtonText": "short Chinese label",
         },
     }
+    user_content: list[dict[str, Any]] = [
+        {"type": "text", "text": json.dumps(prompt, ensure_ascii=False)}
+    ]
+    if parking_map.get("imageBase64"):
+        user_content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{parking_map.get('mimeType', 'image/jpeg')};base64,{parking_map['imageBase64']}"
+                },
+            }
+        )
+    user_content.append(
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime_type};base64,{image_base64}"},
+        }
+    )
     request_body = {
         "model": MODEL_NAME,
         "temperature": 0.2,
@@ -203,13 +247,7 @@ def call_vision_model(payload: dict[str, Any], session: dict[str, Any]) -> dict[
             },
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": json.dumps(prompt, ensure_ascii=False)},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime_type};base64,{image_base64}"},
-                    },
-                ],
+                "content": user_content,
             },
         ],
     }
@@ -262,11 +300,13 @@ def parse_model_json(content: str) -> dict[str, Any] | None:
 def locate(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = normalize_session_id(payload)
     session = get_session(session_id)
+    remember_parking_map(session, payload)
     fallback = infer_demo_frame(session, payload)
     model_result = call_vision_model(payload, session)
     result = validate_result(model_result or {}, fallback)
     result["sessionId"] = session_id
     result["provider"] = PROVIDER
+    result["mapProvided"] = bool(session.get("parkingMap", {}).get("imageBase64"))
     result["timestamp"] = now_ms()
 
     session["frameIndex"] += 1

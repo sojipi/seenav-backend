@@ -81,6 +81,14 @@ Request:
   "imageBase64": "...",
   "mimeType": "image/jpeg",
   "size": 123456,
+  "mapBase64": "...",
+  "mapMimeType": "image/jpeg",
+  "mapSize": 456789,
+  "routeContext": {
+    "phase": "navigating",
+    "startSource": "parking_map",
+    "visualFocus": "parking_area_color"
+  },
   "scenario": "parking"
 }
 ```
@@ -99,7 +107,8 @@ Response:
   "confidence": 82,
   "progress": 25,
   "activeStep": 2,
-  "scanButtonText": "继续校准"
+  "scanButtonText": "继续校准",
+  "mapProvided": true
 }
 ```
 

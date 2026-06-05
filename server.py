@@ -205,16 +205,23 @@ def infer_demo_frame(session: dict[str, Any], payload: dict[str, Any]) -> dict[s
 
 def build_navigation_prompt(payload: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
     parking_map = session.get("parkingMap") or {}
-    return {
+    destination = str(payload.get("destination") or "").strip() or "未知目标车位"
+    map_provided = bool(parking_map.get("imageBase64"))
+    prompt = {
         "task": "Analyze smart-glasses parking navigation using a supplied parking map and the current camera frame.",
-        "destination": payload.get("destination", "B1 C区 C18"),
+        "destination": destination,
         "scenario": payload.get("scenario", "parking"),
-        "semanticMap": PARKING_MAP,
+        "destinationRules": [
+            "The user's requested destination is the exact destination string. Do not replace it with examples or prior demo targets.",
+            "Never route to B1 C区 C18 unless the user explicitly requested C18 or the supplied parking map clearly shows that as the route.",
+            "Do not instruct the user to change floor unless the supplied parking map visibly requires a floor change for the requested destination.",
+            "If the requested destination is not visible on the current parking map, ask for the correct map or guide toward the matching area shown on the map instead of inventing a different floor or zone.",
+        ],
         "parkingMapContext": {
-            "provided": bool(parking_map.get("imageBase64")),
+            "provided": map_provided,
             "mapSize": parking_map.get("size", 0),
             "mapMimeType": parking_map.get("mimeType", ""),
-            "meaning": "The parking map contains the user's current starting position, target parking zones, and area colors.",
+            "meaning": "The parking map image is authoritative. It contains the user's current starting position, target parking zones, and area colors.",
         },
         "routeContext": payload.get("routeContext") or {},
         "history": session.get("history", [])[-4:],
@@ -238,6 +245,12 @@ def build_navigation_prompt(payload: dict[str, Any], session: dict[str, Any]) ->
             "scanButtonText": "short Chinese label",
         },
     }
+    if map_provided:
+        prompt["semanticMapPolicy"] = "Do not use the built-in demo B1/C18 semantic map. Use only the supplied parking map image, current frame, history, and requested destination."
+    else:
+        prompt["semanticMap"] = PARKING_MAP
+        prompt["semanticMapPolicy"] = "This built-in map is only a fallback demo map and must not override the user's requested destination."
+    return prompt
 
 
 def get_frame_image(payload: dict[str, Any]) -> tuple[str, str] | None:
@@ -464,6 +477,7 @@ def locate(payload: dict[str, Any]) -> dict[str, Any]:
     result = validate_result(model_result or {}, fallback)
     result["sessionId"] = session_id
     result["provider"] = PROVIDER
+    result["destination"] = str(payload.get("destination") or "")
     result["mapProvided"] = bool(session.get("parkingMap", {}).get("imageBase64"))
     result["timestamp"] = now_ms()
 

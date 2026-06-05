@@ -2,7 +2,7 @@
 
 This is a standalone backend for the AIUI smart-glasses navigation demo. It is a separate Git project and is ignored by the parent AIUI app repo.
 
-## Run
+## Local Run
 
 ```powershell
 py .\server.py
@@ -21,6 +21,42 @@ pages/index/index?apiBase=http%3A%2F%2F127.0.0.1%3A8787
 ```
 
 For a real glasses device, replace `127.0.0.1` with the LAN address reachable by the device.
+
+## Railway Quick Deploy
+
+This repo is ready for Railway quick deploy. Railway uses:
+
+- `railway.json` for Nixpacks, the start command, and `/health` checks
+- `runtime.txt` to pin Python 3.12
+- `Procfile` as a fallback process declaration
+- `requirements.txt` to mark this as a Python service with no external packages
+
+Deploy steps:
+
+1. Push this repo to GitHub
+2. Go to [railway.app](https://railway.app) and login
+3. Click **New Project** -> **Deploy from GitHub repo**
+4. Select this repository
+5. Railway will auto-detect Python and run `python server.py`
+
+If you deploy from a monorepo, set Railway's root directory to `seenav-backend`.
+
+Optional environment variables:
+
+```text
+SEENAV_PROVIDER=mock
+VISION_MODEL_BASE_URL=https://api.example.com/v1
+VISION_MODEL_API_KEY=replace-me
+VISION_MODEL_NAME=vision-model-name
+```
+
+After deploy, you'll get a public URL like `https://seenav-backend.up.railway.app`
+
+Use it in AIUI:
+
+```text
+pages/index/index?apiBase=https%3A%2F%2Fseenav-backend.up.railway.app
+```
 
 ## API
 

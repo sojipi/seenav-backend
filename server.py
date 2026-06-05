@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent
 MAP_PATH = ROOT / "data" / "parking_map.json"
 HOST = os.environ.get("SEENAV_HOST", "0.0.0.0")
-PORT = int(os.environ.get("SEENAV_PORT", "8787"))
+PORT = int(os.environ.get("PORT") or os.environ.get("SEENAV_PORT", "8787"))
 PROVIDER = os.environ.get("SEENAV_PROVIDER", "mock").strip().lower()
 MODEL_BASE_URL = os.environ.get("VISION_MODEL_BASE_URL", "").rstrip("/")
 MODEL_API_KEY = os.environ.get("VISION_MODEL_API_KEY", "")

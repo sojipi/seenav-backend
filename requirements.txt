@@ -1,0 +1,2 @@
+# SeeNav Backend - No external dependencies
+# Uses Python standard library only

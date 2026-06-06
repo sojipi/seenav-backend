@@ -784,6 +784,53 @@ def model_configured() -> bool:
     return False
 
 
+def build_analysis_flow(
+    result: dict[str, Any],
+    session: dict[str, Any],
+    payload: dict[str, Any],
+    imu_assessment: dict[str, Any],
+    model_used: bool,
+) -> list[dict[str, str]]:
+    parking_map = session.get("parkingMap") if isinstance(session.get("parkingMap"), dict) else {}
+    map_provided = bool(parking_map.get("imageBase64"))
+    frame_source = str(payload.get("frameSource") or "")
+    imu_ready = bool(imu_assessment.get("provided") or imu_assessment.get("mapBaselineProvided"))
+    guide_status = "active"
+    if "route-done" in str(result.get("routeClass") or ""):
+        guide_status = "done"
+
+    vision_status = "done" if map_provided or frame_source == "parking_map" or model_used else "active"
+    graph_status = "done" if map_provided else "waiting"
+    imu_status = "done" if imu_ready else "waiting"
+
+    return [
+        {
+            "id": "vision",
+            "label": "视觉识别",
+            "status": vision_status,
+            "detail": "识别地图、当前位置、分区颜色和可见地标",
+        },
+        {
+            "id": "graph",
+            "label": "智能建图",
+            "status": graph_status,
+            "detail": "把地图抽象为起点、目标和可行走路线",
+        },
+        {
+            "id": "imu",
+            "label": "IMU判断",
+            "status": imu_status,
+            "detail": str(imu_assessment.get("description") or "等待可用的方位传感器数据"),
+        },
+        {
+            "id": "guide",
+            "label": "地标指引",
+            "status": guide_status,
+            "detail": str(result.get("nextAction") or ""),
+        },
+    ]
+
+
 def locate(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = normalize_session_id(payload)
     session = get_session(session_id)
@@ -805,6 +852,7 @@ def locate(payload: dict[str, Any]) -> dict[str, Any]:
     result["mapIMUProvided"] = imu_has_reading(map_imu)
     if session.get("lastIMU", {}).get("mapRelativeYawDegrees") is not None:
         result["mapRelativeYawDegrees"] = session["lastIMU"]["mapRelativeYawDegrees"]
+    result["analysisFlow"] = build_analysis_flow(result, session, payload, imu_assessment, model_used)
     result["timestamp"] = now_ms()
 
     session["frameIndex"] += 1

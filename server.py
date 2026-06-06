@@ -562,6 +562,9 @@ def build_navigation_prompt(payload: dict[str, Any], session: dict[str, Any]) ->
 def get_frame_image(payload: dict[str, Any]) -> tuple[str, str] | None:
     image_base64 = payload.get("imageBase64") or ""
     mime_type = payload.get("mimeType") or "image/jpeg"
+    if not image_base64 and payload.get("frameSource") == "parking_map":
+        image_base64 = payload.get("mapBase64") or ""
+        mime_type = payload.get("mapMimeType") or mime_type
     if not image_base64:
         return None
     return str(image_base64), str(mime_type)

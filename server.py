@@ -462,6 +462,130 @@ def apply_imu_assessment(result: dict[str, Any], assessment: dict[str, Any], mod
     return result
 
 
+def clamp_unit(value: Any, fallback: float) -> float:
+    number = safe_float(value, fallback)
+    if number is None:
+        number = fallback
+    return max(0.0, min(1.0, float(number)))
+
+
+def normalize_nav_map(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    raw_nodes = value.get("nodes")
+    if not isinstance(raw_nodes, list):
+        return None
+
+    nodes: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, raw_node in enumerate(raw_nodes[:12]):
+        if not isinstance(raw_node, dict):
+            continue
+        node_id = str(raw_node.get("id") or f"node_{index}").strip()[:32]
+        if not node_id or node_id in seen_ids:
+            node_id = f"node_{index}"
+        seen_ids.add(node_id)
+        label = str(raw_node.get("label") or node_id).strip()[:24]
+        nodes.append(
+            {
+                "id": node_id,
+                "label": label,
+                "x": clamp_unit(raw_node.get("x"), 0.1 + index * 0.12),
+                "y": clamp_unit(raw_node.get("y"), 0.5),
+                "type": str(raw_node.get("type") or "landmark")[:24],
+            }
+        )
+
+    if len(nodes) < 2:
+        return None
+
+    node_ids = {node["id"] for node in nodes}
+    edges: list[dict[str, str]] = []
+    raw_edges = value.get("edges")
+    if isinstance(raw_edges, list):
+        for raw_edge in raw_edges[:18]:
+            start_id = None
+            end_id = None
+            if isinstance(raw_edge, dict):
+                start_id = raw_edge.get("from")
+                end_id = raw_edge.get("to")
+            elif isinstance(raw_edge, list) and len(raw_edge) >= 2:
+                start_id = raw_edge[0]
+                end_id = raw_edge[1]
+            start = str(start_id or "").strip()
+            end = str(end_id or "").strip()
+            if start in node_ids and end in node_ids and start != end:
+                edges.append({"from": start, "to": end})
+    if not edges:
+        edges = [
+            {"from": nodes[index]["id"], "to": nodes[index + 1]["id"]}
+            for index in range(len(nodes) - 1)
+        ]
+
+    raw_route = value.get("route")
+    route = [str(item).strip() for item in raw_route] if isinstance(raw_route, list) else []
+    route = [item for item in route if item in node_ids]
+    if len(route) < 2:
+        route = [node["id"] for node in nodes]
+
+    current_node_id = str(value.get("currentNodeId") or value.get("current") or route[0]).strip()
+    target_node_id = str(value.get("targetNodeId") or value.get("target") or route[-1]).strip()
+    if current_node_id not in node_ids:
+        current_node_id = route[0]
+    if target_node_id not in node_ids:
+        target_node_id = route[-1]
+
+    return {
+        "version": 1,
+        "source": str(value.get("source") or "recognized_map")[:32],
+        "title": str(value.get("title") or "路线图").strip()[:24],
+        "nodes": nodes,
+        "edges": edges,
+        "route": route,
+        "currentNodeId": current_node_id,
+        "targetNodeId": target_node_id,
+    }
+
+
+def demo_nav_map(destination: str) -> dict[str, Any]:
+    target = destination or "目标点"
+    return {
+        "version": 1,
+        "source": "fallback_demo",
+        "title": "地标路线",
+        "nodes": [
+            {"id": "start", "label": "当前位置", "x": 0.12, "y": 0.62, "type": "current"},
+            {"id": "landmark_1", "label": "主通道", "x": 0.34, "y": 0.48, "type": "landmark"},
+            {"id": "turn", "label": "转向点", "x": 0.58, "y": 0.48, "type": "turn"},
+            {"id": "target", "label": target[:18], "x": 0.84, "y": 0.34, "type": "target"},
+        ],
+        "edges": [
+            {"from": "start", "to": "landmark_1"},
+            {"from": "landmark_1", "to": "turn"},
+            {"from": "turn", "to": "target"},
+        ],
+        "route": ["start", "landmark_1", "turn", "target"],
+        "currentNodeId": "start",
+        "targetNodeId": "target",
+    }
+
+
+def build_nav_map(result: dict[str, Any], session: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    nav_map = normalize_nav_map(result.get("navMap"))
+    if nav_map:
+        session["navMap"] = nav_map
+        return nav_map
+
+    current = session.get("navMap")
+    if isinstance(current, dict):
+        return current
+
+    destination = str(payload.get("destination") or "").strip()
+    nav_map = demo_nav_map(destination)
+    session["navMap"] = nav_map
+    return nav_map
+
+
 def clamp_percent(value: Any, fallback: int) -> int:
     number = safe_int(value, fallback)
     return max(0, min(100, number))
@@ -549,10 +673,27 @@ def build_navigation_prompt(payload: dict[str, Any], session: dict[str, Any]) ->
             "progress": "0-100 integer",
             "activeStep": "0-4 integer",
             "scanButtonText": "short Chinese label",
+            "navMap": {
+                "title": "short map title",
+                "source": "recognized_map",
+                "nodes": [
+                    {
+                        "id": "stable node id",
+                        "label": "visible landmark or destination label",
+                        "x": "0-1 normalized horizontal coordinate in the map image",
+                        "y": "0-1 normalized vertical coordinate in the map image",
+                        "type": "current | landmark | turn | target",
+                    }
+                ],
+                "edges": [{"from": "node id", "to": "node id"}],
+                "route": ["ordered node ids from current position to destination"],
+                "currentNodeId": "current/start node id",
+                "targetNodeId": "destination node id",
+            },
         },
     }
     if map_provided:
-        prompt["semanticMapPolicy"] = "Do not use the built-in demo B1/C18 semantic map. Use only the supplied parking map image, current frame, history, and requested destination."
+        prompt["semanticMapPolicy"] = "Do not use the built-in demo B1/C18 semantic map. Use only the supplied parking map image, current frame, history, and requested destination. If the supplied map is visible, extract a compact navMap graph for canvas rendering with normalized coordinates."
     else:
         prompt["semanticMap"] = PARKING_MAP
         prompt["semanticMapPolicy"] = "This built-in map is only a fallback demo map and must not override the user's requested destination."
@@ -785,6 +926,7 @@ def locate(payload: dict[str, Any]) -> dict[str, Any]:
     imu_assessment = build_imu_assessment(session)
     result = validate_result(model_result or {}, fallback)
     result = apply_imu_assessment(result, imu_assessment, model_used)
+    result["navMap"] = build_nav_map(result, session, payload)
     result["sessionId"] = session_id
     result["provider"] = PROVIDER
     result["destination"] = str(payload.get("destination") or "")

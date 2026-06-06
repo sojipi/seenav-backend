@@ -89,10 +89,39 @@ Request:
   "mapBase64": "...",
   "mapMimeType": "image/jpeg",
   "mapSize": 456789,
+  "mapCapturedAt": 1717560000000,
+  "mapIMU": {
+    "accelerometer": { "x": 0.01, "y": 0.02, "z": 9.8, "timestamp": 1717560000000, "hasReading": true },
+    "gyroscope": { "x": 0.0, "y": 0.0, "z": 0.0, "timestamp": 1717560000000, "hasReading": true },
+    "orientation": {
+      "quaternion": [0, 0, 0.7071, 0.7071],
+      "euler": { "yawDegrees": 90, "pitchDegrees": 0, "rollDegrees": 0 },
+      "timestamp": 1717560000000,
+      "hasReading": true
+    },
+    "headingDegrees": 90,
+    "timestamp": 1717560000000,
+    "hasReading": true
+  },
+  "imu": {
+    "accelerometer": { "x": 0.03, "y": 0.01, "z": 9.7, "timestamp": 1717560010000, "hasReading": true },
+    "gyroscope": { "x": 0.0, "y": 0.0, "z": 0.12, "timestamp": 1717560010000, "hasReading": true },
+    "orientation": {
+      "quaternion": [0, 0, 0.866, 0.5],
+      "euler": { "yawDegrees": 120, "pitchDegrees": 0, "rollDegrees": 0 },
+      "timestamp": 1717560010000,
+      "hasReading": true
+    },
+    "headingDegrees": 120,
+    "mapRelativeYawDegrees": 30,
+    "timestamp": 1717560010000,
+    "hasReading": true
+  },
   "routeContext": {
     "phase": "navigating",
     "startSource": "parking_map",
-    "visualFocus": "parking_area_color"
+    "visualFocus": "parking_area_color",
+    "orientationReference": "map_capture_imu"
   },
   "scenario": "parking"
 }

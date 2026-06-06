@@ -143,6 +143,7 @@ def get_session(session_id: str) -> dict[str, Any]:
             "sessionId": session_id,
             "frameIndex": 0,
             "history": [],
+            "imuHistory": [],
             "createdAt": now_ms(),
         }
     return SESSIONS[session_id]
@@ -152,12 +153,36 @@ def remember_parking_map(session: dict[str, Any], payload: dict[str, Any]) -> No
     map_base64 = str(payload.get("mapBase64") or "")
     if not map_base64:
         return
+    previous_map = session.get("parkingMap") if isinstance(session.get("parkingMap"), dict) else {}
+    map_size = safe_int(payload.get("mapSize"), 0)
+    captured_at = safe_int(payload.get("mapCapturedAt"), now_ms())
+    incoming_imu = normalize_imu(payload.get("mapIMU") or payload.get("mapImu"))
+    previous_imu = previous_map.get("imu") if isinstance(previous_map.get("imu"), dict) else None
+    same_map = previous_map.get("size") == map_size and previous_map.get("capturedAt") == captured_at
+    map_imu = incoming_imu
+    if same_map and not imu_has_reading(map_imu) and imu_has_reading(previous_imu):
+        map_imu = previous_imu
     session["parkingMap"] = {
         "imageBase64": map_base64,
         "mimeType": payload.get("mapMimeType") or "image/jpeg",
-        "size": safe_int(payload.get("mapSize"), 0),
-        "capturedAt": safe_int(payload.get("mapCapturedAt"), now_ms()),
+        "size": map_size,
+        "capturedAt": captured_at,
+        "imu": map_imu,
     }
+
+
+def remember_imu(session: dict[str, Any], payload: dict[str, Any]) -> None:
+    imu = normalize_imu(payload.get("imu"))
+    if not imu or not imu.get("hasReading"):
+        return
+    map_imu = (session.get("parkingMap") or {}).get("imu")
+    relative_yaw = relative_yaw_degrees(imu, map_imu)
+    if relative_yaw is not None:
+        imu["mapRelativeYawDegrees"] = relative_yaw
+    session["lastIMU"] = imu
+    imu_history = session.get("imuHistory", [])
+    imu_history.append(session["lastIMU"])
+    session["imuHistory"] = imu_history[-12:]
 
 
 def normalize_session_id(payload: dict[str, Any]) -> str:
@@ -170,6 +195,271 @@ def safe_int(value: Any, fallback: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def safe_float(value: Any, fallback: float | None = None) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if number != number or number in (float("inf"), float("-inf")):
+        return fallback
+    return number
+
+
+def imu_has_reading(imu: Any) -> bool:
+    return isinstance(imu, dict) and bool(imu.get("hasReading"))
+
+
+def normalize_degrees(value: float) -> float:
+    normalized = value % 360
+    if normalized < 0:
+        normalized += 360
+    return normalized
+
+
+def normalize_signed_degrees(value: float) -> float:
+    normalized = normalize_degrees(value)
+    if normalized > 180:
+        normalized -= 360
+    return normalized
+
+
+def normalize_vector(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"x": None, "y": None, "z": None, "timestamp": 0, "hasReading": False}
+    x = safe_float(value.get("x"))
+    y = safe_float(value.get("y"))
+    z = safe_float(value.get("z"))
+    has_reading = bool(value.get("hasReading")) and x is not None and y is not None and z is not None
+    return {
+        "x": x,
+        "y": y,
+        "z": z,
+        "timestamp": safe_int(value.get("timestamp"), 0),
+        "hasReading": has_reading,
+    }
+
+
+def normalize_quaternion(value: Any) -> list[float] | None:
+    if not isinstance(value, list) or len(value) < 4:
+        return None
+    quaternion: list[float] = []
+    for item in value[:4]:
+        number = safe_float(item)
+        if number is None:
+            return None
+        quaternion.append(number)
+    return quaternion
+
+
+def normalize_imu(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    accelerometer = normalize_vector(value.get("accelerometer"))
+    gyroscope = normalize_vector(value.get("gyroscope"))
+    orientation_raw = value.get("orientation") if isinstance(value.get("orientation"), dict) else {}
+    euler_raw = orientation_raw.get("euler") if isinstance(orientation_raw.get("euler"), dict) else {}
+    compass_raw = value.get("compass") if isinstance(value.get("compass"), dict) else {}
+    yaw = safe_float(
+        euler_raw.get("yawDegrees"),
+        safe_float(
+            value.get("headingDegrees"),
+            safe_float(compass_raw.get("headingDegrees"), safe_float(compass_raw.get("heading"))),
+        ),
+    )
+    pitch = safe_float(euler_raw.get("pitchDegrees"))
+    roll = safe_float(euler_raw.get("rollDegrees"))
+    quaternion = normalize_quaternion(orientation_raw.get("quaternion"))
+    orientation_has_reading = bool(
+        quaternion is not None or
+        yaw is not None or
+        orientation_raw.get("hasReading")
+    ) and (quaternion is not None or yaw is not None)
+    heading_degrees = normalize_degrees(yaw) if yaw is not None else None
+    normalized = {
+        "accelerometer": accelerometer,
+        "gyroscope": gyroscope,
+        "orientation": {
+            "quaternion": quaternion,
+            "euler": {
+                "yawDegrees": heading_degrees,
+                "pitchDegrees": pitch,
+                "rollDegrees": roll,
+            },
+            "timestamp": safe_int(orientation_raw.get("timestamp"), 0),
+            "hasReading": orientation_has_reading,
+        },
+        "headingDegrees": heading_degrees,
+        "timestamp": safe_int(value.get("timestamp"), now_ms()),
+    }
+    normalized["hasReading"] = bool(
+        accelerometer["hasReading"] or
+        gyroscope["hasReading"] or
+        orientation_has_reading
+    )
+    map_relative = safe_float(value.get("mapRelativeYawDegrees"))
+    if map_relative is not None:
+        normalized["mapRelativeYawDegrees"] = normalize_signed_degrees(map_relative)
+    return normalized
+
+
+def relative_yaw_degrees(current_imu: dict[str, Any] | None, map_imu: dict[str, Any] | None) -> float | None:
+    if not current_imu or not map_imu:
+        return None
+    current_heading = current_imu.get("headingDegrees")
+    map_heading = map_imu.get("headingDegrees")
+    if not isinstance(current_heading, (int, float)) or not isinstance(map_heading, (int, float)):
+        return None
+    return normalize_signed_degrees(float(current_heading) - float(map_heading))
+
+
+def vector_magnitude(vector: Any) -> float | None:
+    if not isinstance(vector, dict) or not vector.get("hasReading"):
+        return None
+    x = vector.get("x")
+    y = vector.get("y")
+    z = vector.get("z")
+    if not all(isinstance(item, (int, float)) for item in (x, y, z)):
+        return None
+    return float((x * x + y * y + z * z) ** 0.5)
+
+
+def infer_motion_state(imu: dict[str, Any] | None) -> dict[str, Any]:
+    if not imu_has_reading(imu):
+        return {"state": "unknown", "description": "No usable motion reading."}
+
+    gyro_magnitude = vector_magnitude(imu.get("gyroscope"))
+    accel_magnitude = vector_magnitude(imu.get("accelerometer"))
+    gyro_z = (imu.get("gyroscope") or {}).get("z")
+
+    if gyro_magnitude is not None and gyro_magnitude >= 0.35:
+        return {
+            "state": "turning",
+            "description": "The glasses appear to be rotating.",
+            "gyroscopeMagnitude": round(gyro_magnitude, 3),
+            "gyroZ": round(float(gyro_z), 3) if isinstance(gyro_z, (int, float)) else None,
+        }
+    if accel_magnitude is not None and abs(accel_magnitude - 9.81) >= 1.2:
+        return {
+            "state": "moving",
+            "description": "The wearer appears to be walking or changing speed.",
+            "accelerometerMagnitude": round(accel_magnitude, 3),
+        }
+    return {
+        "state": "steady",
+        "description": "The glasses appear mostly steady.",
+        "accelerometerMagnitude": round(accel_magnitude, 3) if accel_magnitude is not None else None,
+        "gyroscopeMagnitude": round(gyro_magnitude, 3) if gyro_magnitude is not None else None,
+    }
+
+
+def build_imu_assessment(session: dict[str, Any]) -> dict[str, Any]:
+    parking_map = session.get("parkingMap") if isinstance(session.get("parkingMap"), dict) else {}
+    map_imu = parking_map.get("imu") if isinstance(parking_map.get("imu"), dict) else None
+    current_imu = session.get("lastIMU") if isinstance(session.get("lastIMU"), dict) else None
+    assessment: dict[str, Any] = {
+        "provided": imu_has_reading(current_imu),
+        "mapBaselineProvided": imu_has_reading(map_imu),
+        "canCompareToMap": False,
+        "motion": infer_motion_state(current_imu),
+    }
+    if not current_imu:
+        return assessment
+
+    relative_yaw = safe_float(current_imu.get("mapRelativeYawDegrees"))
+    if relative_yaw is None:
+        relative_yaw = relative_yaw_degrees(current_imu, map_imu)
+    if relative_yaw is None:
+        return assessment
+
+    relative_yaw = normalize_signed_degrees(relative_yaw)
+    absolute_yaw = abs(relative_yaw)
+    if absolute_yaw <= 25:
+        alignment = "aligned"
+        description = "相对地图拍摄方向基本一致"
+    elif absolute_yaw <= 65:
+        alignment = "slight_turn"
+        description = f"相对地图拍摄方向{turn_text(relative_yaw)}约 {round(absolute_yaw)}°"
+    elif absolute_yaw <= 135:
+        alignment = "turned"
+        description = f"相对地图拍摄方向已{turn_text(relative_yaw)}约 {round(absolute_yaw)}°"
+    else:
+        alignment = "opposite"
+        description = f"相对地图拍摄方向接近反向，已{turn_text(relative_yaw)}约 {round(absolute_yaw)}°"
+
+    assessment.update(
+        {
+            "canCompareToMap": True,
+            "mapRelativeYawDegrees": round(relative_yaw, 1),
+            "absoluteDeltaDegrees": round(absolute_yaw, 1),
+            "turnDirection": "right" if relative_yaw > 0 else "left" if relative_yaw < 0 else "straight",
+            "alignment": alignment,
+            "description": description,
+        }
+    )
+    return assessment
+
+
+def turn_text(relative_yaw: float) -> str:
+    if relative_yaw > 0:
+        return "向右转"
+    if relative_yaw < 0:
+        return "向左转"
+    return "偏转"
+
+
+def append_orientation_note(orientation: Any, note: str) -> str:
+    base = str(orientation or "").strip()
+    if not base:
+        return note
+    if note in base:
+        return base
+    return f"{base}（IMU：{note}）"
+
+
+def prepend_instruction(next_action: Any, prefix: str) -> str:
+    action = str(next_action or "").strip()
+    if action.startswith(prefix):
+        return action
+    if not action:
+        return prefix
+    return f"{prefix}；{action}"
+
+
+def apply_imu_assessment(result: dict[str, Any], assessment: dict[str, Any], model_used: bool) -> dict[str, Any]:
+    result["imuAssessment"] = assessment
+    if not assessment.get("canCompareToMap"):
+        return result
+
+    result["orientation"] = append_orientation_note(result.get("orientation"), assessment["description"])
+
+    route_class = str(result.get("routeClass") or "")
+    is_terminal = "route-done" in route_class or "route-off" in route_class
+    alignment = assessment.get("alignment")
+    if is_terminal:
+        return result
+
+    if alignment == "opposite":
+        result["routeState"] = "方向待确认"
+        result["routeClass"] = "route-state route-warn"
+        result["confidence"] = min(clamp_percent(result.get("confidence"), 60), 68)
+        result["nextAction"] = prepend_instruction(
+            result.get("nextAction"),
+            "IMU 显示你已接近背向地图拍摄方向，先停下确认前方地标和地图箭头",
+        )
+        result["scanButtonText"] = "重新校准"
+        return result
+
+    if alignment == "turned" and not model_used:
+        result["routeState"] = "方向待确认"
+        result["routeClass"] = "route-state route-warn"
+        result["confidence"] = min(clamp_percent(result.get("confidence"), 70), 78)
+        result["nextAction"] = prepend_instruction(
+            result.get("nextAction"),
+            "IMU 显示已经明显转向，请用前方柱号、箭头和分区颜色确认这是计划路线",
+        )
+    return result
 
 
 def clamp_percent(value: Any, fallback: int) -> int:
@@ -207,8 +497,11 @@ def build_navigation_prompt(payload: dict[str, Any], session: dict[str, Any]) ->
     parking_map = session.get("parkingMap") or {}
     destination = str(payload.get("destination") or "").strip() or "未知目标车位"
     map_provided = bool(parking_map.get("imageBase64"))
+    map_imu = parking_map.get("imu") or {}
+    last_imu = session.get("lastIMU") or {}
+    imu_assessment = build_imu_assessment(session)
     prompt = {
-        "task": "Analyze smart-glasses parking navigation using a supplied parking map and the current camera frame.",
+        "task": "Analyze smart-glasses parking navigation using a supplied parking map, the current camera frame, and IMU sensor data.",
         "destination": destination,
         "scenario": payload.get("scenario", "parking"),
         "destinationRules": [
@@ -221,7 +514,17 @@ def build_navigation_prompt(payload: dict[str, Any], session: dict[str, Any]) ->
             "provided": map_provided,
             "mapSize": parking_map.get("size", 0),
             "mapMimeType": parking_map.get("mimeType", ""),
+            "capturedIMU": map_imu,
+            "orientationReference": "The capturedIMU is the glasses orientation when the parking map image was captured. Treat it as the baseline for comparing later camera-frame orientations.",
             "meaning": "The parking map image is authoritative. It contains the user's current starting position, target parking zones, and area colors.",
+        },
+        "imuContext": {
+            "provided": bool(last_imu),
+            "current": last_imu,
+            "recentHistory": session.get("imuHistory", [])[-4:],
+            "mapRelativeYawDegrees": last_imu.get("mapRelativeYawDegrees"),
+            "assessment": imu_assessment,
+            "meaning": "IMU sensor data from the smart glasses. accelerometer is device acceleration, gyroscope is rotation rate, orientation.quaternion/euler yaw is glasses orientation, and mapRelativeYawDegrees is the signed yaw delta from the map-capture baseline to the current frame. Use the relative yaw together with visible map arrows, labels, lanes, and landmarks to decide whether the user is facing the intended map direction.",
         },
         "routeContext": payload.get("routeContext") or {},
         "history": session.get("history", [])[-4:],
@@ -230,15 +533,18 @@ def build_navigation_prompt(payload: dict[str, Any], session: dict[str, Any]) ->
             "Use visible parking-area colors from the camera frame as the main localization cue.",
             "Cross-check area color, parking-zone labels, arrows, lane direction, and numbered spaces before saying the user arrived.",
             "Do not mark arrived unless the target parking space or an immediate target-side landmark is visible.",
+            "Use mapRelativeYawDegrees to determine how much the user has turned since the parking map was captured.",
+            "Use accelerometer and gyroscope data to detect walking, turning, and standing still. Adjust guidance if the user appears to be turning or has stopped.",
+            "When map-relative yaw changes between frames, update the orientation description and next action to reflect the new facing direction.",
         ],
         "responseContract": {
-            "routeState": "已定位 | 方向正确 | 接近目标 | 已到达 | 偏离路线",
+            "routeState": "已定位 | 方向正确 | 方向待确认 | 接近目标 | 已到达 | 偏离路线",
             "routeClass": "route-state route-ok | route-state route-warn | route-state route-done | route-state route-off",
             "frameMeta": "short label",
             "currentPlace": "where the user is",
-            "orientation": "where the user is facing",
+            "orientation": "where the user is facing (incorporate map-relative yaw/IMU orientation when available)",
             "landmarks": ["visible landmark names"],
-            "nextAction": "one concise Chinese walking instruction based on visible landmarks",
+            "nextAction": "one concise Chinese walking instruction based on visible landmarks and IMU-detected movement state",
             "confidence": "0-100 integer",
             "progress": "0-100 integer",
             "activeStep": "0-4 integer",
@@ -472,27 +778,42 @@ def locate(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = normalize_session_id(payload)
     session = get_session(session_id)
     remember_parking_map(session, payload)
+    remember_imu(session, payload)
     fallback = infer_demo_frame(session, payload)
     model_result = call_vision_model(payload, session)
+    model_used = model_result is not None
+    imu_assessment = build_imu_assessment(session)
     result = validate_result(model_result or {}, fallback)
+    result = apply_imu_assessment(result, imu_assessment, model_used)
     result["sessionId"] = session_id
     result["provider"] = PROVIDER
     result["destination"] = str(payload.get("destination") or "")
     result["mapProvided"] = bool(session.get("parkingMap", {}).get("imageBase64"))
+    result["imuProvided"] = bool(session.get("lastIMU", {}).get("hasReading"))
+    parking_map = session.get("parkingMap") if isinstance(session.get("parkingMap"), dict) else {}
+    map_imu = parking_map.get("imu") if isinstance(parking_map.get("imu"), dict) else {}
+    result["mapIMUProvided"] = imu_has_reading(map_imu)
+    if session.get("lastIMU", {}).get("mapRelativeYawDegrees") is not None:
+        result["mapRelativeYawDegrees"] = session["lastIMU"]["mapRelativeYawDegrees"]
     result["timestamp"] = now_ms()
 
     session["frameIndex"] += 1
     session["lastResult"] = result
-    session["history"].append(
-        {
-            "timestamp": result["timestamp"],
-            "currentPlace": result["currentPlace"],
-            "orientation": result["orientation"],
-            "routeState": result["routeState"],
-            "landmarks": result["landmarks"],
-            "progress": result["progress"],
-        }
-    )
+    history_entry = {
+        "timestamp": result["timestamp"],
+        "currentPlace": result["currentPlace"],
+        "orientation": result["orientation"],
+        "routeState": result["routeState"],
+        "landmarks": result["landmarks"],
+        "progress": result["progress"],
+    }
+    last_imu = session.get("lastIMU")
+    if last_imu:
+        history_entry["headingDegrees"] = last_imu.get("headingDegrees")
+        history_entry["mapRelativeYawDegrees"] = last_imu.get("mapRelativeYawDegrees")
+        history_entry["accelerometer"] = last_imu.get("accelerometer", {})
+        history_entry["gyroscope"] = last_imu.get("gyroscope", {})
+    session["history"].append(history_entry)
     session["history"] = session["history"][-12:]
     return result
 

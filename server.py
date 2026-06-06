@@ -708,6 +708,12 @@ def get_frame_image(payload: dict[str, Any]) -> tuple[str, str] | None:
     return str(image_base64), str(mime_type)
 
 
+def is_same_image(left: Any, right: Any) -> bool:
+    left_text = str(left or "")
+    right_text = str(right or "")
+    return bool(left_text and right_text and left_text == right_text)
+
+
 def call_vision_model(payload: dict[str, Any], session: dict[str, Any]) -> dict[str, Any] | None:
     if PROVIDER == "openai_compatible":
         return call_openai_compatible_model(payload, session)
@@ -724,6 +730,7 @@ def call_openai_compatible_model(payload: dict[str, Any], session: dict[str, Any
         return None
     image_base64, mime_type = frame_image
     parking_map = session.get("parkingMap") or {}
+    skip_duplicate_frame = is_same_image(image_base64, parking_map.get("imageBase64"))
     prompt = build_navigation_prompt(payload, session)
     user_content: list[dict[str, Any]] = [
         {"type": "text", "text": json.dumps(prompt, ensure_ascii=False)}
@@ -737,12 +744,13 @@ def call_openai_compatible_model(payload: dict[str, Any], session: dict[str, Any
                 },
             }
         )
-    user_content.append(
-        {
-            "type": "image_url",
-            "image_url": {"url": f"data:{mime_type};base64,{image_base64}"},
-        }
-    )
+    if not skip_duplicate_frame:
+        user_content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime_type};base64,{image_base64}"},
+            }
+        )
     request_body = {
         "model": MODEL_NAME,
         "temperature": 0.2,
@@ -817,6 +825,7 @@ def call_anthropic_compatible_model(payload: dict[str, Any], session: dict[str, 
         return None
     image_base64, mime_type = frame_image
     parking_map = session.get("parkingMap") or {}
+    skip_duplicate_frame = is_same_image(image_base64, parking_map.get("imageBase64"))
     prompt = build_navigation_prompt(payload, session)
     user_content: list[dict[str, Any]] = [
         {"type": "text", "text": json.dumps(prompt, ensure_ascii=False)}
@@ -832,16 +841,17 @@ def call_anthropic_compatible_model(payload: dict[str, Any], session: dict[str, 
                 },
             }
         )
-    user_content.append(
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": mime_type,
-                "data": image_base64,
-            },
-        }
-    )
+    if not skip_duplicate_frame:
+        user_content.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": image_base64,
+                },
+            }
+        )
     request_body: dict[str, Any] = {
         "model": ANTHROPIC_MODEL,
         "max_tokens": 1200,
